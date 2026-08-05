@@ -3,8 +3,8 @@ const dotenv = require('dotenv');
 
 dotenv.config();
 
-const { saveTransaction, getTransactions, deleteTransactions, updateTransactions, getSummary } = require('./modules/supabaseDB');
-const { extractTransaction } = require('./modules/groqExtractor');
+const { saveTransaction, getTransactions, deleteTransactions, updateTransactions, getSummary, getCategories, getOrCreateCategory } = require('./modules/supabaseDB');
+const { extractTransaction, detectCategory } = require('./modules/groqExtractor');
 
 const ADMIN_USER_ID = process.env.ADMIN_DISCORD_USER_ID;
 
@@ -46,6 +46,17 @@ const commands = [
     .setDescription('Lihat list pemasukan')
     .addStringOption(option =>
       option.setName('periode').setDescription('Filter periode (opsional)').setRequired(false)),
+  new SlashCommandBuilder()
+    .setName('categories')
+    .setDescription('Lihat daftar kategori')
+    .addStringOption(option =>
+      option.setName('jenis')
+      .setDescription('Filter jenis: pengeluaran atau pemasukan')
+      .setRequired(false)
+      .addChoices(
+        { name: 'Pengeluaran', value: 'pengeluaran' },
+        { name: 'Pemasukan', value: 'pemasukan' }
+      )),
   new SlashCommandBuilder()
     .setName('help')
     .setDescription('Tampilkan panduan penggunaan bot')
@@ -213,11 +224,55 @@ async function handleListCommand(interaction, jenis) {
   await interaction.reply({ embeds: [embed] });
 }
 
+async function handleCategoriesCommand(interaction) {
+  const jenisFilter = interaction.options.getString('jenis');
+  
+  const result = await getCategories(jenisFilter ? { jenis: jenisFilter } : {});
+  
+  if (!result.success) {
+    await interaction.reply({ content: `Gagal mengambil kategori: ${result.error}`, ephemeral: true });
+    return;
+  }
+
+  const categories = result.data;
+
+  if (categories.length === 0) {
+    await interaction.reply({ content: 'Belum ada kategori tersedia.', ephemeral: true });
+    return;
+  }
+
+  const pengeluaranCats = categories.filter(c => c.jenis === 'pengeluaran');
+  const pemasukanCats = categories.filter(c => c.jenis === 'pemasukan');
+
+  const embed = new EmbedBuilder()
+    .setTitle('📂 Daftar Kategori')
+    .setColor(0x3b82f6)
+    .setTimestamp();
+
+  if (jenisFilter === 'pengeluaran' || !jenisFilter) {
+    if (pengeluaranCats.length > 0) {
+      const listText = pengeluaranCats.map((c, i) => `${i + 1}. ${c.name}`).join('\n');
+      embed.addFields({ name: '🔴 Pengeluaran', value: listText, inline: false });
+    }
+  }
+
+  if (jenisFilter === 'pemasukan' || !jenisFilter) {
+    if (pemasukanCats.length > 0) {
+      const listText = pemasukanCats.map((c, i) => `${i + 1}. ${c.name}`).join('\n');
+      embed.addFields({ name: '🟢 Pemasukan', value: listText, inline: false });
+    }
+  }
+
+  embed.setFooter({ text: `Total: ${categories.length} kategori` });
+
+  await interaction.reply({ embeds: [embed] });
+}
+
 async function handleSlashCommand(interaction) {
   const commandName = interaction.commandName;
   const userId = interaction.user.id;
 
-  if (!isAdmin(userId) && ['summary', 'expenses', 'incomes'].includes(commandName)) {
+  if (!isAdmin(userId) && ['summary', 'expenses', 'incomes', 'categories'].includes(commandName)) {
     await interaction.reply({ content: 'Maaf, command ini hanya untuk admin.', ephemeral: true });
     return;
   }
@@ -227,13 +282,31 @@ async function handleSlashCommand(interaction) {
       case 'expense': {
         const nama = interaction.options.getString('nama');
         const harga = Math.round(interaction.options.getNumber('harga'));
+        
+        // Auto-detect category
+        const categoriesResult = await getCategories({ jenis: 'pengeluaran' });
+        let categoryId = null;
+        
+        if (categoriesResult.success && categoriesResult.data.length > 0) {
+          const categoryDetection = await detectCategory(nama, 'pengeluaran', categoriesResult.data);
+          
+          if (categoryDetection.success) {
+            const categoryResult = await getOrCreateCategory(categoryDetection.category, 'pengeluaran');
+            if (categoryResult.success) {
+              categoryId = categoryResult.data.id;
+            }
+          }
+        }
+        
         const result = await saveTransaction({
           jenis: 'pengeluaran',
           nama,
           harga,
+          categoryId,
           sourceDiscordId: userId,
           rawMessage: `/expense ${nama} ${harga}`
         });
+        
         if (result.success) {
           await interaction.reply(`✅ Tercatat: Pengeluaran — ${nama} — ${formatRupiah(harga)}`);
         } else {
@@ -244,13 +317,31 @@ async function handleSlashCommand(interaction) {
       case 'income': {
         const nama = interaction.options.getString('nama');
         const harga = Math.round(interaction.options.getNumber('harga'));
+        
+        // Auto-detect category
+        const categoriesResult = await getCategories({ jenis: 'pemasukan' });
+        let categoryId = null;
+        
+        if (categoriesResult.success && categoriesResult.data.length > 0) {
+          const categoryDetection = await detectCategory(nama, 'pemasukan', categoriesResult.data);
+          
+          if (categoryDetection.success) {
+            const categoryResult = await getOrCreateCategory(categoryDetection.category, 'pemasukan');
+            if (categoryResult.success) {
+              categoryId = categoryResult.data.id;
+            }
+          }
+        }
+        
         const result = await saveTransaction({
           jenis: 'pemasukan',
           nama,
           harga,
+          categoryId,
           sourceDiscordId: userId,
           rawMessage: `/income ${nama} ${harga}`
         });
+        
         if (result.success) {
           await interaction.reply(`✅ Tercatat: Pemasukan — ${nama} — ${formatRupiah(harga)}`);
         } else {
@@ -267,6 +358,9 @@ async function handleSlashCommand(interaction) {
       case 'incomes':
         await handleListCommand(interaction, 'pemasukan');
         break;
+      case 'categories':
+        await handleCategoriesCommand(interaction);
+        break;
       case 'help':
         await interaction.reply({
           content: `**Panduan Expense Tracker Bot**
@@ -275,10 +369,13 @@ async function handleSlashCommand(interaction) {
 \`/summary [periode]\` — Ringkasan keuangan
 \`/expenses [periode]\` — List pengeluaran
 \`/incomes [periode]\` — List pemasukan
+\`/categories [jenis]\` — Lihat daftar kategori
 \`/help\` — Tampilkan panduan ini
 
 Periode: hari ini, kemarin, minggu ini, bulan ini, atau YYYY-MM-DD sampai YYYY-MM-DD
-Contoh: /summary minggu ini`
+Contoh: /summary minggu ini
+
+**Kategori Otomatis**: Bot akan otomatis menentukan kategori untuk setiap transaksi menggunakan AI. Jika kategori belum ada, bot akan membuatnya secara otomatis.`
         });
         break;
     }
@@ -383,10 +480,26 @@ async function handleNaturalMessage(message) {
     return;
   }
 
+  // Auto-detect category
+  const categoriesResult = await getCategories({ jenis: result.jenis });
+  let categoryId = null;
+  
+  if (categoriesResult.success && categoriesResult.data.length > 0) {
+    const categoryDetection = await detectCategory(result.nama, result.jenis, categoriesResult.data);
+    
+    if (categoryDetection.success) {
+      const categoryResult = await getOrCreateCategory(categoryDetection.category, result.jenis);
+      if (categoryResult.success) {
+        categoryId = categoryResult.data.id;
+      }
+    }
+  }
+  
   const dbResult = await saveTransaction({
     jenis: result.jenis,
     nama: result.nama,
     harga: result.harga,
+    categoryId,
     sourceDiscordId: message.author.id,
     rawMessage: content
   });

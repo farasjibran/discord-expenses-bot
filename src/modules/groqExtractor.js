@@ -89,4 +89,52 @@ async function extractTransaction(rawMessage) {
   }
 }
 
-module.exports = { extractTransaction };
+async function detectCategory(transactionName, jenis, existingCategories) {
+  const categoryList = existingCategories.map(c => c.name).join(', ');
+  
+  const categoryPrompt = `You are a category classifier for financial transactions.
+
+Available categories for ${jenis}:
+${categoryList}
+
+Task: Classify the transaction "${transactionName}" into ONE of the existing categories above.
+If none fit perfectly, suggest a NEW category name (2-3 words max, in Indonesian).
+
+Return ONLY valid JSON:
+- If existing category fits: {"category": "exact category name from list", "isNew": false}
+- If need new category: {"category": "new category name", "isNew": true}
+
+Examples:
+- "makan siang" with categories ["Makanan & Minuman", "Transportasi"] → {"category": "Makanan & Minuman", "isNew": false}
+- "beli baju" with categories ["Makanan & Minuman", "Transportasi"] → {"category": "Belanja", "isNew": true}
+- "gaji bulanan" with categories ["Gaji", "Bonus"] → {"category": "Gaji", "isNew": false}`;
+
+  try {
+    const completion = await groq.chat.completions.create({
+      model: process.env.GROQ_MODEL || 'llama-3.1-70b-versatile',
+      messages: [
+        { role: 'user', content: categoryPrompt }
+      ],
+      response_format: { type: 'json_object' },
+      temperature: 0.3,
+      max_tokens: 200
+    });
+
+    const result = JSON.parse(completion.choices[0].message.content);
+
+    if (!result.category) {
+      return { success: false, reason: 'no category returned' };
+    }
+
+    return {
+      success: true,
+      category: result.category.trim(),
+      isNew: result.isNew || false
+    };
+  } catch (err) {
+    console.error('Groq category detection error:', err.message);
+    return { success: false, reason: 'AI category detection failed' };
+  }
+}
+
+module.exports = { extractTransaction, detectCategory };

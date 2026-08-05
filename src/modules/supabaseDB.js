@@ -19,6 +19,7 @@ async function saveTransaction(transaction) {
       jenis: transaction.jenis,
       nama: transaction.nama,
       harga: transaction.harga,
+      category_id: transaction.categoryId || null,
       source_discord_id: transaction.sourceDiscordId,
       raw_message: transaction.rawMessage
     }])
@@ -195,4 +196,91 @@ async function getSummary(filters = {}) {
   };
 }
 
-module.exports = { saveTransaction, getTransactions, deleteTransactions, updateTransactions, getSummary };
+async function getCategories(filters = {}) {
+  let query = supabase
+    .from('categories')
+    .select('*')
+    .order('name', { ascending: true });
+
+  if (filters.jenis) {
+    query = query.eq('jenis', filters.jenis);
+  }
+
+  if (filters.name) {
+    query = query.ilike('name', `%${filters.name}%`);
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    console.error('Supabase categories query error:', error.message);
+    return { success: false, error: error.message };
+  }
+
+  return { success: true, data: data || [] };
+}
+
+async function getCategoryByName(name, jenis) {
+  const { data, error } = await supabase
+    .from('categories')
+    .select('*')
+    .eq('name', name)
+    .eq('jenis', jenis)
+    .single();
+
+  if (error) {
+    if (error.code === 'PGRST116') {
+      return { success: true, data: null };
+    }
+    console.error('Supabase category query error:', error.message);
+    return { success: false, error: error.message };
+  }
+
+  return { success: true, data };
+}
+
+async function createCategory(name, jenis) {
+  const { data, error } = await supabase
+    .from('categories')
+    .insert([{ name, jenis }])
+    .select()
+    .single();
+
+  if (error) {
+    console.error('Supabase category insert error:', error.message);
+    return { success: false, error: error.message };
+  }
+
+  return { success: true, data };
+}
+
+async function getOrCreateCategory(name, jenis) {
+  const existingResult = await getCategoryByName(name, jenis);
+  
+  if (!existingResult.success) {
+    return existingResult;
+  }
+
+  if (existingResult.data) {
+    return { success: true, data: existingResult.data, created: false };
+  }
+
+  const createResult = await createCategory(name, jenis);
+  if (createResult.success) {
+    return { success: true, data: createResult.data, created: true };
+  }
+
+  return createResult;
+}
+
+module.exports = { 
+  saveTransaction, 
+  getTransactions, 
+  deleteTransactions, 
+  updateTransactions, 
+  getSummary,
+  getCategories,
+  getCategoryByName,
+  createCategory,
+  getOrCreateCategory
+};
