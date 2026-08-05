@@ -495,6 +495,14 @@ async function handleNaturalMessage(message) {
     }
   }
   
+  // fallback: no categories or detection failed → Lainnya
+  if (categoryId === null) {
+    const categoryResult = await getOrCreateCategory('Lainnya', result.jenis);
+    if (categoryResult.success) {
+      categoryId = categoryResult.data.id;
+    }
+  }
+  
   const dbResult = await saveTransaction({
     jenis: result.jenis,
     nama: result.nama,

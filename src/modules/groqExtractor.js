@@ -115,12 +115,20 @@ Examples:
       messages: [
         { role: 'user', content: categoryPrompt }
       ],
-      response_format: { type: 'json_object' },
       temperature: 0.3,
-      max_tokens: 200
+      max_tokens: 500
     });
 
-    const result = JSON.parse(completion.choices[0].message.content);
+    let content = completion.choices[0].message.content.trim();
+    content = content.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+
+    // try extract JSON object if still not clean
+    const jsonMatch = content.match(/\{[^{}]*\}/);
+    if (!jsonMatch) {
+      return { success: false, reason: 'no JSON found in response' };
+    }
+    
+    const result = JSON.parse(jsonMatch[0]);
 
     if (!result.category) {
       return { success: false, reason: 'no category returned' };
